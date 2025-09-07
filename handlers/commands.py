@@ -1,7 +1,7 @@
 import os
 import asyncio
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from telethon import events
 from telethon.tl.functions.channels import GetParticipantsRequest, JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.types import ChannelParticipantsSearch, InputPeerUser, MessageMediaDocument
@@ -10,7 +10,7 @@ from telethon.errors import PeerIdInvalidError, UserIsBlockedError
 import re
 import logging
 
-
+from filter.filter import owner_filter
 from config_data.client import client
 from utils.random_get_message import random_message, TypeMessage
 
@@ -60,7 +60,7 @@ async def wait_for_user_response(chat_id, timeout=60):
             del waiting_for_response[chat_id]
 
 
-@client.on(events.NewMessage())
+@client.on(events.NewMessage(func=owner_filter))
 async def handle_user_responses(event):
     """Обработчик ответов пользователей"""
     if not is_valid_message_event(event):
@@ -117,12 +117,124 @@ async def send_messages_batch(user_ids_batch, message_type, client):
     return batch_results
 
 
-async def run_newsletter():
-    """Основная функция рассылки с циклами и перерывами"""
+async def wait_for_working_hours():
+    """
+    Ожидает наступления рабочего времени (8:00 - 20:00)
+    Если текущее время вне рабочего периода - ждет до 8:00
+    """
+    while True:
+        now = datetime.now()
+        current_time = now.time()
+
+        # Определяем рабочие часы: с 8:00 до 20:00
+        start_time = datetime.strptime("08:00", "%H:%M").time()  # 8:00
+        end_time = datetime.strptime("20:00", "%H:%M").time()    # 20:00
+
+        # Проверяем, находимся ли мы в рабочем времени
+        if start_time <= current_time <= end_time:
+            logging.info(f"✅ Текущее время {current_time.strftime('%H:%M')} - рабочий период")
+            return
+
+        # Вычисляем время до 8:00 следующего дня
+        if current_time > end_time:
+            # После 20:00 - ждем до 8:00 следующего дня
+            tomorrow = now.date() + timedelta(days=1)
+            target_datetime = datetime.combine(tomorrow, start_time)
+        else:
+            # До 8:00 - ждем до 8:00 сегодня
+            target_datetime = datetime.combine(now.date(), start_time)
+
+        wait_seconds = (target_datetime - now).total_seconds()
+
+        logging.info(f"⏸️ Вне рабочего времени ({current_time.strftime('%H:%M')}). Ожидаем до {start_time.strftime('%H:%M')}")
+        logging.info(f"⏰ Осталось ждать: {wait_seconds / 3600:.1f} часов")
+
+        # Ждем нужное количество секунд
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+
+
+async def is_working_time():
+    """
+    Проверяет, является ли текущее время рабочим (8:00 - 20:00)
+    Возвращает True/False без ожидания
+    """
+    now = datetime.now()
+    current_time = now.time()
+
+    start_time = datetime.strptime("08:00", "%H:%M").time()  # 8:00
+    end_time = datetime.strptime("20:00", "%H:%M").time()    # 20:00
+
+    return start_time <= current_time <= end_time
+
+
+async def run_custom_newsletter(event):
+    """Основная функция пользовательской рассылки с проверкой времени"""
     global newsletter_state
 
     while newsletter_state['is_running'] and newsletter_state['current_index'] < len(newsletter_state['user_ids']):
         try:
+            # Проверяем рабочее время перед каждой пачкой
+            if not await is_working_time():
+                await event.reply(f"⏸️ Текущее время вне рабочего периода (8:00-20:00). Ожидаем...")
+                await wait_for_working_hours()
+                await event.reply("✅ Рабочее время наступило! Продолжаем рассылку.")
+                continue
+
+            # Определяем размер текущей пачки (рандомно 3-6 сообщений)
+            batch_size = random.randint(3, 6)
+            remaining_users = len(newsletter_state['user_ids']) - newsletter_state['current_index']
+            batch_size = min(batch_size, remaining_users)
+
+            # Берем пачку пользователей
+            start_idx = newsletter_state['current_index']
+            end_idx = start_idx + batch_size
+            user_ids_batch = newsletter_state['user_ids'][start_idx:end_idx]
+
+            newsletter_state['current_batch'] += 1
+
+            # Отправляем пачку
+            logging.info(f"📦 Пачка #{newsletter_state['current_batch']}: {batch_size} сообщений")
+            await event.reply(f"📦 Пачка #{newsletter_state['current_batch']}: {batch_size} сообщений")
+
+            batch_results = await send_custom_messages_batch(user_ids_batch, client)
+
+            logging.info(f"✅ Пачка #{newsletter_state['current_batch']} завершена: "
+                         f"{batch_results['success']} успешно, {batch_results['failed']} неудачно")
+            await event.reply(f"✅ Пачка #{newsletter_state['current_batch']} завершена: "
+                              f"{batch_results['success']} успешно, {batch_results['failed']} неудачно")
+
+            # Если еще есть пользователи - делаем перерыв 15 минут
+            if newsletter_state['current_index'] < len(newsletter_state['user_ids']):
+                logging.info("⏸️ Перерыв 15 минут до следующей пачки...")
+                await event.reply("⏸️ Перерыв 15 минут до следующей пачки...")
+                await asyncio.sleep(15 * 60)
+
+        except Exception as e:
+            logging.error(f"❌ Ошибка в run_custom_newsletter: {e}")
+            await event.reply(f"❌ Ошибка в run_custom_newsletter: {e}")
+            await asyncio.sleep(60)
+
+    # Завершение рассылки
+    newsletter_state['is_running'] = False
+    newsletter_state['end_time'] = datetime.now()
+    logging.info("✅ Пользовательская рассылка завершена")
+    await event.reply("✅ Пользовательская рассылка завершена")
+
+
+async def run_newsletter(event):
+    """Основная функция рассылки с проверкой времени"""
+    global newsletter_state
+
+    while newsletter_state['is_running'] and newsletter_state['current_index'] < len(newsletter_state['user_ids']):
+        try:
+            # Проверяем рабочее время перед каждой пачкой
+            if not await is_working_time():
+                await event.reply(f"⏸️ Текущее время вне рабочего периода (8:00-20:00). Ожидаем...")
+                await wait_for_working_hours()
+                await event.reply("✅ Рабочее время наступило! Продолжаем рассылку.")
+                continue
+
             # Определяем размер текущей пачки (рандомно 5-15 сообщений)
             batch_size = random.randint(5, 15)
             remaining_users = len(newsletter_state['user_ids']) - newsletter_state['current_index']
@@ -137,24 +249,31 @@ async def run_newsletter():
 
             # Отправляем пачку
             logging.info(f"📦 Пачка #{newsletter_state['current_batch']}: {batch_size} сообщений")
+            await event.reply(f"📦 Пачка #{newsletter_state['current_batch']}: {batch_size} сообщений")
+
             batch_results = await send_messages_batch(user_ids_batch, newsletter_state['message_type'], client)
 
             logging.info(f"✅ Пачка #{newsletter_state['current_batch']} завершена: "
                          f"{batch_results['success']} успешно, {batch_results['failed']} неудачно")
+            await event.reply(f"✅ Пачка #{newsletter_state['current_batch']} завершена: "
+                              f"{batch_results['success']} успешно, {batch_results['failed']} неудачно")
 
             # Если еще есть пользователи - делаем перерыв 15 минут
             if newsletter_state['current_index'] < len(newsletter_state['user_ids']):
                 logging.info("⏸️ Перерыв 15 минут до следующей пачки...")
+                await event.reply("⏸️ Перерыв 15 минут до следующей пачки...")
                 await asyncio.sleep(15 * 60)
 
         except Exception as e:
             logging.error(f"❌ Ошибка в run_newsletter: {e}")
+            await event.reply(f"❌ Ошибка в run_newsletter: {e}")
             await asyncio.sleep(60)
 
     # Завершение рассылки
     newsletter_state['is_running'] = False
     newsletter_state['end_time'] = datetime.now()
     logging.info("✅ Рассылка завершена")
+    await event.reply("✅ Рассылка завершена")
 
 
 def get_newsletter_status():
@@ -163,8 +282,7 @@ def get_newsletter_status():
         return "📭 Рассылка не запущена"
 
     elapsed = datetime.now() - newsletter_state['start_time']
-    progress = (newsletter_state['current_index'] / newsletter_state['total_users'] * 100) if newsletter_state[
-                                                                                                  'total_users'] > 0 else 0
+    progress = (newsletter_state['current_index'] / newsletter_state['total_users'] * 100) if newsletter_state['total_users'] > 0 else 0
 
     # Определяем тип рассылки
     if newsletter_state['message_type'] == 'custom':
@@ -187,7 +305,7 @@ def get_newsletter_status():
     return status
 
 
-@client.on(events.NewMessage(pattern='/newsletter_status'))
+@client.on(events.NewMessage(pattern='/newsletter_status', func=owner_filter))
 async def newsletter_status_command(event):
     """Обработчик команды статуса рассылки"""
     try:
@@ -200,7 +318,7 @@ async def newsletter_status_command(event):
         logging.error(f"Ошибка в newsletter_status_command: {e}")
 
 
-@client.on(events.NewMessage(pattern='/stop_newsletter'))
+@client.on(events.NewMessage(pattern='/stop_newsletter', func=owner_filter))
 async def stop_newsletter_command(event):
     """Обработчик команды остановки рассылки"""
     try:
@@ -244,9 +362,10 @@ async def parse_user_ids_from_file(file_path: str) -> list:
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
             for line in file:
+                line = line.replace("\n", " ")
                 user_id = line.split(" ")
                 for i in user_id:
-                    if i and i.isdigit():
+                    if i.isdigit():
                         user_ids.append(i)
 
         logging.info(f"Parsed {len(user_ids)} user IDs from file")
@@ -257,7 +376,7 @@ async def parse_user_ids_from_file(file_path: str) -> list:
         return []
 
 
-@client.on(events.NewMessage(pattern='/start_newsletter'))
+@client.on(events.NewMessage(pattern='/start_newsletter', func=owner_filter))
 async def newsletter(event):
     """Обработчик команды /newsletter"""
     global newsletter_state
@@ -270,8 +389,13 @@ async def newsletter(event):
             await event.reply("❌ Рассылка уже запущена. Используйте /newsletter_status для статуса")
             return
 
+        if not await is_working_time():
+            await event.reply("⏸️ Сейчас вне рабочего времени (8:00-20:00). Запуск отложен.")
+            await wait_for_working_hours()
+            await event.reply("✅ Рабочее время наступило! Начинаем рассылку.")
+
         message_type = TypeMessage.question
-        type_name = "вопросы"  # Добавлено определение переменной type_name
+        type_name = "вопросы"
 
         # Запрашиваем файл
         await event.reply(
@@ -326,7 +450,7 @@ async def newsletter(event):
         )
 
         # Запускаем рассылку в фоне
-        asyncio.create_task(run_newsletter())
+        asyncio.create_task(run_newsletter(event))
 
         # Удаляем временный файл
         try:
@@ -340,7 +464,7 @@ async def newsletter(event):
             await event.reply(f"❌ Произошла ошибка: {e}")
 
 
-@client.on(events.NewMessage(pattern='/custom_newsletter'))
+@client.on(events.NewMessage(pattern='/custom_newsletter', func=owner_filter))
 async def custom_newsletter(event):
     """Обработчик команды /custom_newsletter с пользовательским сообщением"""
     global newsletter_state
@@ -352,6 +476,11 @@ async def custom_newsletter(event):
         if newsletter_state['is_running']:
             await event.reply("❌ Рассылка уже запущена. Используйте /newsletter_status для статуса")
             return
+
+        if not await is_working_time():
+            await event.reply("⏸️ Сейчас вне рабочего времени (8:00-20:00). Запуск отложен.")
+            await wait_for_working_hours()
+            await event.reply("✅ Рабочее время наступило! Начинаем рассылку.")
 
         # Запрашиваем пользовательское сообщение
         await event.reply(
@@ -405,7 +534,12 @@ async def custom_newsletter(event):
         message_variations = [message_text]
 
         # Добавляем небольшие вариации к сообщениям
-
+        emojis = [" 👍", " 😊", " 🎯", " 💫", " 🔥"]
+        for i in range(1, num_messages):
+            if random.random() > 0.5:  # 50% chance to modify
+                message_variations.append(message_text + random.choice(emojis))
+            else:
+                message_variations.append(message_text)
 
         # Инициализируем состояние рассылки
         newsletter_state.update({
@@ -425,14 +559,14 @@ async def custom_newsletter(event):
         await event.reply(
             f"✅ Пользовательская рассылка запущена!\n"
             f"• 👥 Пользователей: {len(user_ids)}\n"
-            f"• 📝 Сообщений: {num_messages} вариантов\n"
+            f"• 📝 Сообщений: {len(message_variations)} вариантов\n"
             f"• ⏱️ Перерывы: 15 минут между пачками\n"
             f"• ⚡ Сообщения: 3-5 секунд между отправками\n\n"
             f"Используйте /newsletter_status для отслеживания прогресса"
         )
 
         # Запускаем рассылку в фоне
-        asyncio.create_task(run_custom_newsletter())
+        asyncio.create_task(run_custom_newsletter(event))
 
         # Удаляем временный файл
         try:
@@ -444,46 +578,6 @@ async def custom_newsletter(event):
         logging.error(f"Ошибка в custom_newsletter команде: {e}")
         if is_valid_message_event(event):
             await event.reply(f"❌ Произошла ошибка: {e}")
-
-
-async def run_custom_newsletter():
-    """Основная функция пользовательской рассылки"""
-    global newsletter_state
-
-    while newsletter_state['is_running'] and newsletter_state['current_index'] < len(newsletter_state['user_ids']):
-        try:
-            # Определяем размер текущей пачки (рандомно 3-6 сообщений)
-            batch_size = random.randint(3, 6)
-            remaining_users = len(newsletter_state['user_ids']) - newsletter_state['current_index']
-            batch_size = min(batch_size, remaining_users)
-
-            # Берем пачку пользователей
-            start_idx = newsletter_state['current_index']
-            end_idx = start_idx + batch_size
-            user_ids_batch = newsletter_state['user_ids'][start_idx:end_idx]
-
-            newsletter_state['current_batch'] += 1
-
-            # Отправляем пачку
-            logging.info(f"📦 Пачка #{newsletter_state['current_batch']}: {batch_size} сообщений")
-            batch_results = await send_custom_messages_batch(user_ids_batch, client)
-
-            logging.info(f"✅ Пачка #{newsletter_state['current_batch']} завершена: "
-                         f"{batch_results['success']} успешно, {batch_results['failed']} неудачно")
-
-            # Если еще есть пользователи - делаем перерыв 15 минут
-            if newsletter_state['current_index'] < len(newsletter_state['user_ids']):
-                logging.info("⏸️ Перерыв 15 минут до следующей пачки...")
-                await asyncio.sleep(15 * 60)
-
-        except Exception as e:
-            logging.error(f"❌ Ошибка в run_custom_newsletter: {e}")
-            await asyncio.sleep(60)
-
-    # Завершение рассылки
-    newsletter_state['is_running'] = False
-    newsletter_state['end_time'] = datetime.now()
-    logging.info("✅ Пользовательская рассылка завершена")
 
 
 async def send_custom_messages_batch(user_ids_batch, client):
@@ -622,7 +716,7 @@ async def process_channel(link, chat_id):
 
             if joined:
                 # Ждем больше времени после присоединения
-                await asyncio.sleep(10)  # Увеличиваем время ожидания
+                await asyncio.sleep(10)
 
                 # Пытаемся получить пользователей снова
                 users, error = await get_channel_users(channel_username, chat_id)
@@ -659,7 +753,7 @@ async def process_channel(link, chat_id):
         return False, f"❌ Критическая ошибка: {e}"
 
 
-@client.on(events.NewMessage(pattern='/get_users'))
+@client.on(events.NewMessage(pattern='/get_users', func=owner_filter))
 async def get_users_command(event):
     """Обработчик команды /get_users"""
     try:
