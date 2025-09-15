@@ -8,6 +8,7 @@ class TgBot:
     api_id: int
     api_hash: str
     phone: str
+    admin_id: str
 
 
 @dataclass
@@ -21,4 +22,5 @@ def load_config(path: str = None) -> Config:
     return Config(tg_bot=TgBot(bot_name=env('BOT_NAME'),
                                api_id=env('API_ID'),
                                api_hash=env('API_HASH'),
-                               phone=env('PHONE')))
+                               phone=env('PHONE'),
+                               admin_id=env('ADMINS')))
