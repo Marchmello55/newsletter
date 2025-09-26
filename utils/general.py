@@ -187,15 +187,15 @@ async def send_custom_messages_batch(user_ids_batch, client):
             # Выбираем случайное сообщение из вариаций
             message_text = random.choice(newsletter_state['message_variations'])
 
-            # Рандомная задержка между сообщениями 3-5 секунд
-            delay = random.uniform(3, 5)
-            await asyncio.sleep(delay)
+
 
             success = await send_message_to_user(user_id, message_text, client)
 
             if success:
                 batch_results['success'] += 1
                 newsletter_state['sent_count'] += 1
+                delay = random.uniform(3, 5)
+                await asyncio.sleep(delay)
             else:
                 batch_results['failed'] += 1
                 newsletter_state['failed_count'] += 1
@@ -220,18 +220,18 @@ async def send_messages_batch(user_ids_batch, message_type, client):
             # Получаем рандомное сообщение
             message_text = await random_message(message_type)
 
-            # Рандомная задержка между сообщениями 3-5 секунд
-            delay = random.uniform(3, 5)
-            await asyncio.sleep(delay)
 
             success = await send_message_to_user(user_id, message_text, client)
 
             if success:
                 batch_results['success'] += 1
                 newsletter_state['sent_count'] += 1
+                delay = random.uniform(3, 5)
+                await asyncio.sleep(delay)
             else:
                 batch_results['failed'] += 1
                 newsletter_state['failed_count'] += 1
+                await asyncio.sleep(0.5)
 
             newsletter_state['current_index'] += 1
 

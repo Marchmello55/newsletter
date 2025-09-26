@@ -212,14 +212,19 @@ async def reset_custom_newsletter(client):
 
             # Перерыв если есть еще пользователи
             if newsletter_state['current_index'] < len(newsletter_state['user_ids']):
-                logging.info("⏸️ Перерыв 15 минут до следующей пачки...")
-                await client.send_message("me", "⏸️ Перерыв 15 минут до следующей пачки...")
+                if len(batch_results['success']) != 0:
+                    logging.info("⏸️ Перерыв 15 минут до следующей пачки...")
+                    await client.send_message("me", "⏸️ Перерыв 15 минут до следующей пачки...")
 
-                for _ in range(15):
-                    await asyncio.sleep(60)
-                    if not newsletter_state['is_running']:
-                        await client.send_message("me", "✅ Рассылка остановлена во время перерыва.")
-                        return
+                    # Ждем 15 минут, но с проверкой каждую минуту, не остановлена ли рассылка
+                    for _ in range(15):
+                        await asyncio.sleep(60)
+                        if not newsletter_state['is_running']:
+                            await client.send_message("me", "✅ Рассылка остановлена во время перерыва.")
+                            return
+                else:
+                    logging.info("В пачке не было успешной отправки поэтому отправка пачки начинается сейчас")
+                    await client.send_message("me", "В пачке не было успешной отправки поэтому отправка пачки начинается сейчас")
 
     except Exception as e:
         logging.error(f"❌ Ошибка в run_custom_newsletter: {e}")

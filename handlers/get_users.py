@@ -59,12 +59,14 @@ async def process_channel(link, chat_id):
         if users is not None:
             # Если доступ есть сразу
             await client.send_message(chat_id, f"✅ Найдено {len(users)} пользователей")
-            filename = f'users.txt'
+            filename = f'users_id.txt'
+            filename_to_username = f'users_username.txt'
             await save_users_to_file(users, filename)
-
+            await save_username_to_file(users, filename_to_username)
             # Отправляем файл пользователю
             await client.send_file(chat_id, filename, caption=f"📊 Данные пользователей канала {channel_username}")
-
+            await client.send_file(chat_id, filename_to_username,
+                                   caption=f"Usernames")
             # Удаляем временный файл
             os.remove(filename)
             return True, "✅ Операция завершена успешно!"
@@ -83,12 +85,16 @@ async def process_channel(link, chat_id):
 
                 if users is not None:
                     await client.send_message(chat_id, f"✅ После присоединения найдено {len(users)} пользователей")
-                    filename = f'users.txt'
+                    filename = f'users_id.txt'
+                    filename_to_username = f'users_username.txt'
                     await save_users_to_file(users, filename)
-
+                    await save_username_to_file(users, filename_to_username)
                     # Отправляем файл пользователю
                     await client.send_file(chat_id, filename,
                                            caption=f"📊 Данные пользователей канала {channel_username}")
+
+                    await client.send_file(chat_id, filename_to_username,
+                                           caption=f"Usernames")
 
                     # Удаляем временный файл
                     os.remove(filename)
@@ -179,9 +185,12 @@ async def save_users_to_file(users, filename):
     with open(filename, 'w', encoding='utf-8') as file:
         for user in users:
             file.write(f"{user.id}\n")
-            """if user.username:
-                file.write(f"{user.id} - @{user.username}\n")
-            else:"""
+
+async def save_username_to_file(users, filename_to_username):
+    with open(filename_to_username, 'w', encoding='utf-8') as file:
+        for user in users:
+            if user.username:file.write(f"{user.id} - @{user.username}\n")
+            else:pass
 
 
 async def join_channel(channel_username):

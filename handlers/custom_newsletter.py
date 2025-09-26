@@ -216,15 +216,19 @@ async def run_custom_newsletter(event):
                 text = create_excel_from_objects(users)
                 await client.send_file(event.message.chat_id, text)
                 os.remove(text)
-                logging.info("⏸️ Перерыв 15 минут до следующей пачки...")
-                await event.reply("⏸️ Перерыв 15 минут до следующей пачки...")
+                if len(batch_results['success'])!=0:
+                    logging.info("⏸️ Перерыв 15 минут до следующей пачки...")
+                    await event.reply("⏸️ Перерыв 15 минут до следующей пачки...")
 
-                # Ждем 15 минут, но с проверкой каждую минуту, не остановлена ли рассылка
-                for _ in range(15):
-                    await asyncio.sleep(60)
-                    if not newsletter_state['is_running']:
-                        await event.reply("✅ Рассылка остановлена во время перерыва.")
-                        return
+                    # Ждем 15 минут, но с проверкой каждую минуту, не остановлена ли рассылка
+                    for _ in range(15):
+                        await asyncio.sleep(60)
+                        if not newsletter_state['is_running']:
+                            await event.reply("✅ Рассылка остановлена во время перерыва.")
+                            return
+                else:
+                    logging.info("В пачке не было успешной отправки поэтому отправка пачки начинается сейчас")
+                    await event.reply("В пачке не было успешной отправки поэтому отправка пачки начинается сейчас")
 
     except Exception as e:
         logging.error(f"❌ Ошибка в run_custom_newsletter: {e}")
